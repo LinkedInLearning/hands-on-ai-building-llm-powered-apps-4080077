@@ -1,16 +1,21 @@
-import chainlit as cl
+import streamlit as st
 
 
 ##############################################################################
 # Exercise 1a: 
-# Please add the proper decorator to this main function so Chainlit will call
-# this function when it receives a message
+# Please configure the Streamlit page with:
+# - A title "Chat Echo Bot"
+# - A page icon "🤖"
+# - Use the wide layout
 ##############################################################################
-async def main(message: cl.Message):
+# YOUR CODE HERE
+
 
 ##############################################################################
 # Exercise 1b:
-# Please get the content of the chainlit Message and send it back as a
-# response
+# Please create a simple chat interface that:
+# 1. Accepts user input using st.chat_input()
+# 2. Displays the user's message using st.chat_message("user")
+# 3. Echoes back the same message using st.chat_message("assistant")
 ##############################################################################
-    await cl.Message().send()
+# YOUR CODE HERE

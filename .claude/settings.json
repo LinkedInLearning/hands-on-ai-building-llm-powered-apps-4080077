@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chainlit run app/app.py)",
+      "Bash(ruff check .)",
+      "Bash(ruff format .)",
+      "Bash(pip install -r requirements.txt)",
+      "Bash(pip install *)",
+      "Read(app/**)",
+      "Read(sample_pdf/**)",
+      "Read(.env.sample)",
+      "Write(app/**)",
+      "Edit(app/**)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Write(.env)",
+      "Bash(git push*)",
+      "Bash(rm -rf *)"
+    ]
+  },
+  "env": {
+    "PYTHONPATH": "${workspaceFolder}",
+    "CHAINLIT_HOST": "0.0.0.0",
+    "CHAINLIT_PORT": "8000"
+  },
+  "claude": {
+    "defaultPrompts": {
+      "commit": "Update LLM app components",
+      "pr": "Enhance PDF QA functionality"
+    }
+  }
+}
