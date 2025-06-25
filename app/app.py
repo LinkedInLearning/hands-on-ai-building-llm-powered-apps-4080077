@@ -153,48 +153,6 @@ def create_search_engine(file_data: bytes, file_type: str = None) -> tuple[Vecto
     return search_engine, docs
 
 
-def create_qa_chain(vector_store: VectorStore) -> RetrievalQAWithSourcesChain:
-    """Create the QA chain with the vector store."""
-    llm = ChatOpenAI(
-        model='gpt-4.1-mini',
-        temperature=0,
-        streaming=True,
-        max_tokens=8192
-    )
-
-    # Create prompts
-    template = """Given the following extracted parts of a long document and a question, create a final answer with references ("SOURCES").
-If you don't know the answer, just say that you don't know. Don't try to make up an answer.
-ALWAYS return a "SOURCES" field in your answer, with the format "SOURCES: <source1>, <source2>, <source3>, ...".
-
-QUESTION: {question}
-=========
-{summaries}
-=========
-FINAL ANSWER:"""
-
-    PROMPT = PromptTemplate(template=template, input_variables=[
-                            "summaries", "question"])
-
-    EXAMPLE_PROMPT = PromptTemplate(
-        template="Content: {page_content}\nSource: {source}",
-        input_variables=["page_content", "source"],
-    )
-
-    chain = RetrievalQAWithSourcesChain.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vector_store.as_retriever(search_kwargs={"k": 5}),
-        chain_type_kwargs={
-            "prompt": PROMPT,
-            "document_prompt": EXAMPLE_PROMPT
-        },
-        return_source_documents=True
-    )
-
-    return chain
-
-
 def format_answer_with_sources(response: Dict[str, Any], docs: List[Document]) -> tuple[str, List[str]]:
     """Format the answer with source information."""
     answer = response["answer"]
