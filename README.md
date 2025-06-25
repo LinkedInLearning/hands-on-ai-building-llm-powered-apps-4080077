@@ -9,15 +9,26 @@ In this lab, we will implement adding OpenAI's embedding model and index the doc
 
 ## Exercises
 
-We will build on top of our existing chainlit app code in `app/app.py` in the `app` folder. As in our previous app, we added some template code and instructions in `app/app.py`
+We will build on top of our existing Streamlit app code in `app/app.py` in the `app` folder. As in our previous app, we added some template code and instructions in `app/app.py`
 
 1. Please go through the exercises in `app/app.py`. 
 
 2. Please lanuch the application by running the following command on the Terminal:
 
 ```bash
-chainlit run app/app.py -w
+streamlit run app/app.py
 ```
+
+## Solution
+
+Please see `app/app.py`.
+
+Alternatively, to launch the application, please run the following command on the Terminal:
+
+```bash
+streamlit run app/app.py
+```
+
 
 ## References
 

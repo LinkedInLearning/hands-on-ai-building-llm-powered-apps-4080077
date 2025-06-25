@@ -1,182 +1,288 @@
-# Chroma compatibility issue resolution
-# https://docs.trychroma.com/troubleshooting#sqlite
-__import__("pysqlite3")
-import sys
-
-sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-
-from tempfile import NamedTemporaryFile
-from typing import List
-
-import chainlit as cl
-from chainlit.types import AskFileResponse
+import tempfile
+import os
+from typing import List, Dict, Any
 
 import chromadb
+from dotenv import load_dotenv
 from chromadb.config import Settings
-from langchain.chains import LLMChain
-from langchain.chat_models import ChatOpenAI
-from langchain.document_loaders import PDFPlumberLoader
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import Document, StrOutputParser
-from langchain.schema.embeddings import Embeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
+from langchain.schema import Document
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.vectorstores.base import VectorStore
+from langchain.chains import RetrievalQAWithSourcesChain
+from langchain.prompts import PromptTemplate
+from langchain_community.document_loaders import PDFPlumberLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_core.messages.utils import convert_to_messages
+
+import streamlit as st
+
+# Load environment variables
+load_dotenv()
 
 
-def process_file(*, file: AskFileResponse) -> List[Document]:
-    """Processes one PDF file from a Chainlit AskFileResponse object by first
-    loading the PDF document and then chunk it into sub documents. Only
-    supports PDF files.
+# Page configuration
+st.set_page_config(
+    page_title="PDF Q&A Assistant",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chain" not in st.session_state:
+    st.session_state.chain = None
+if "docs" not in st.session_state:
+    st.session_state.docs = None
+if "processed_file" not in st.session_state:
+    st.session_state.processed_file = None
+
+
+def process_file(file_data, file_type: str = None) -> list:
+    """
+    Process a PDF file and split it into documents.
 
     Args:
-        file (AskFileResponse): input file to be processed
+        file_data: Either a file path (str) or file bytes
+        file_type: Optional file type, defaults to checking if PDF
+
+    Returns:
+        List of processed documents
 
     Raises:
-        ValueError: when we fail to process PDF files. We consider PDF file
-        processing failure when there's no text returned. For example, PDFs
-        with only image contents, corrupted PDFs, etc.
-
-    Returns:
-        List[Document]: List of Document(s). Each individual document has two
-        fields: page_content(string) and metadata(dict).
+        TypeError: If file is not a PDF
+        ValueError: If PDF parsing fails
     """
-    if file.type != "application/pdf":
+    if file_type and file_type != "application/pdf":
         raise TypeError("Only PDF files are supported")
 
-    with NamedTemporaryFile() as tempfile:
-        tempfile.write(file.content)
+    # Handle both file path and file bytes
+    if isinstance(file_data, bytes):
+        # Create a temporary file for the PDF bytes
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(file_data)
+            tmp_file_path = tmp_file.name
 
-        loader = PDFPlumberLoader(tempfile.name)
+        try:
+            loader = PDFPlumberLoader(tmp_file_path)
+            documents = loader.load()
+        finally:
+            # Clean up the temporary file
+            os.unlink(tmp_file_path)
+    else:
+        # Assume it's a file path
+        loader = PDFPlumberLoader(file_data)
         documents = loader.load()
 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=3000, chunk_overlap=100
-        )
-        docs = text_splitter.split_documents(documents)
+    # Clean up extracted text to fix common PDF extraction issues
+    for doc in documents:
+        # Fix common spacing issues from PDF extraction
+        doc.page_content = doc.page_content.replace(
+            '\n', ' ')  # Replace newlines with spaces
+        doc.page_content = ' '.join(
+            doc.page_content.split())  # Normalize whitespace
 
-        # Adding source_id into the metadata to denote which document it is
-        for i, doc in enumerate(docs):
-            doc.metadata["source"] = f"source_{i}"
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=3000,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    docs = text_splitter.split_documents(documents)
+    for i, doc in enumerate(docs):
+        doc.metadata["source"] = f"source_{i}"
+    if not docs:
+        raise ValueError("PDF file parsing failed.")
+    return docs
 
-        if not docs:
-            raise ValueError("PDF file parsing failed.")
 
-        return docs
-
-
-def create_search_engine(
-    *, docs: List[Document], embeddings: Embeddings
-) -> VectorStore:
-    """Takes a list of Langchain Documents and an embedding model API wrapper
-    and build a search index using a VectorStore.
+def create_search_engine(file_data: bytes, file_type: str = None) -> tuple[VectorStore, List[Document]]:
+    """Create a vector store search engine from a PDF file.
 
     Args:
-        docs (List[Document]): List of Langchain Documents to be indexed into
-        the search engine.
-        embeddings (Embeddings): encoder model API used to calculate embedding
+        file_data: File bytes from Streamlit uploader
+        file_type: Optional file type for validation
 
     Returns:
-        VectorStore: Langchain VectorStore
+        Tuple of (search_engine, docs) where:
+        - search_engine: The Chroma vector store
+        - docs: The processed documents
     """
-    # Initialize Chromadb client to enable resetting and disable telemtry
+    # Process the file
+    docs = process_file(file_data, file_type)
+
+    ##########################################################################
+    # Exercise 1a:
+    # Add OpenAI's embedding model as the encoder. The most standard one to
+    # use is text-embedding-ada-002.
+    ##########################################################################
+    encoder = ...
+    ##########################################################################
+
+    # Initialize Chromadb client and settings, reset to ensure we get a clean
+    # search engine
     client = chromadb.EphemeralClient()
-    client_settings = Settings(allow_reset=True, anonymized_telemetry=False)
+    client_settings = Settings(
+        allow_reset=True,
+        anonymized_telemetry=False
+    )
 
     # Reset the search engine to ensure we don't use old copies.
     # NOTE: we do not need this for production
-    search_engine = Chroma(client=client, client_settings=client_settings)
+    search_engine = Chroma(
+        client=client,
+        client_settings=client_settings
+    )
     search_engine._client.reset()
     ##########################################################################
-    # Exercise 1:
+    # Exercise 1b:
     # Now we have defined our encoder model and initialized our search engine
     # client, please create the search engine from documents
-    # NOTE: https://python.langchain.com/docs/integrations/vectorstores/chroma
     ##########################################################################
-    search_engine = Chroma.from_documents(
-        client=client,
-        documents=docs,
-        embeddings=embeddings,
-        client_settings=client_settings,
-    )
+    search_engine = Chroma.from_documents(...)
     ##########################################################################
 
-    return search_engine
+    return search_engine, docs
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    """This function is written to prepare the environments for the chat
-    with PDF application. It should be decorated with cl.on_chat_start.
+def format_answer_with_sources(response: Dict[str, Any], docs: List[Document]) -> tuple[str, List[str]]:
+    """Format the answer with source information."""
+    answer = response["answer"]
+    sources = response.get("sources", "").strip()
+    source_contents = []
 
-    Returns:
-        None
-    """
-    # Asking user to to upload a PDF to chat with
-    files = None
-    while files is None:
-        files = await cl.AskFileMessage(
-            content="Please Upload the PDF file you want to chat with...",
-            accept=["application/pdf"],
-            max_size_mb=20,
-        ).send()
-    file = files[0]
+    if sources and docs:
+        metadatas = [doc.metadata for doc in docs]
+        all_sources = [m["source"] for m in metadatas]
+        found_sources = []
 
-    # Process and save data in the user session
-    msg = cl.Message(content=f"Processing `{file.name}`...")
-    await msg.send()
+        for source in sources.split(","):
+            source_name = source.strip().replace(".", "")
+            try:
+                index = all_sources.index(source_name)
+                text = docs[index].page_content
+                found_sources.append(source_name)
+                source_contents.append({
+                    "name": source_name,
+                    "content": text
+                })
+            except ValueError:
+                continue
 
-    docs = process_file(file=file)
-    cl.user_session.set("docs", docs)
-    msg.content = f"`{file.name}` processed. Loading ..."
-    await msg.update()
+        if found_sources:
+            answer += f"\n\n**Sources:** {', '.join(found_sources)}"
 
-    # Indexing documents into our search engine
-    ##########################################################################
-    # Exercise 2:
-    # Add OpenAI's embedding model as the encoder. The most standard one to
-    # use is text-embedding-ada-002.
-    # NOTE: https://python.langchain.com/docs/integrations/text_embedding/openai
-    ##########################################################################
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    ##########################################################################
+    return answer, source_contents
 
-    try:
-        search_engine = await cl.make_async(create_search_engine)(
-            docs=docs, embeddings=embeddings
+
+# Main app
+def main():
+    st.title("📚 PDF Q&A Assistant with Vector Search")
+    st.markdown("""
+    Welcome to the PDF Q&A Assistant!
+    This version uses vector embeddings for better search accuracy.
+    To get started:
+    1. Upload a PDF file
+    2. Ask any question about the file!
+    """)
+
+    # Sidebar for file upload
+    with st.sidebar:
+        st.header("📤 Upload PDF")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file",
+            type=["pdf"],
+            help="Upload a PDF file to ask questions about its content"
         )
-    except Exception as e:
-        await cl.Message(content=f"Error: {e}").send()
-        raise SystemError
-    msg.content = f"`{file.name}` loaded. You can now ask questions!"
-    await msg.update()
 
-    model = ChatOpenAI(model="gpt-3.5-turbo-16k-0613", streaming=True)
+        if uploaded_file is not None:
+            if st.session_state.processed_file != uploaded_file.name:
+                with st.status("Processing PDF...", expanded=True) as status:
+                    st.write("📄 Reading PDF content...")
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "You are Chainlit GPT, a helpful assistant.",
-            ),
-            ("human", "{question}"),
-        ]
+                    try:
+                        # Create vector store and process the PDF
+                        st.write("🔍 Creating vector store...")
+                        ##########################################################################
+                        # Exercise 1c:
+                        # We now have an search engine. So lets call our search engine function instead!
+                        ##########################################################################
+                        _, docs = ...
+                        ##########################################################################
+                        st.write(f"✅ Indexed {len(docs)} text chunks")
+
+                        # Store in session state
+                        st.session_state.docs = docs
+                        st.session_state.processed_file = uploaded_file.name
+
+                        status.update(
+                            label="✅ PDF processed successfully!", state="complete")
+
+                    except Exception as e:
+                        status.update(
+                            label="❌ Error processing PDF", state="error")
+                        st.error(f"Error: {str(e)}")
+                        return
+
+            st.success(f"📄 **{uploaded_file.name}** is ready for questions!")
+
+    chain = ChatOpenAI(
+        model='gpt-4.1-mini',
+        temperature=0,
+        streaming=True,
+        max_tokens=8192
     )
-    chain = LLMChain(llm=model, prompt=prompt, output_parser=StrOutputParser())
+    # Store the chain in session state
+    st.session_state.chain = chain
 
-    # We are saving the chain in user_session, so we do not have to rebuild
-    # it every single time.
-    cl.user_session.set("chain", chain)
+    # Chat interface
+    if st.session_state.chain is not None:
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+                # Display sources if available
+                if "sources" in message and message["sources"]:
+                    for source in message["sources"]:
+                        with st.expander(f"📄 Source: {source['name']}"):
+                            st.text(source["content"])
+
+        # Chat input
+        if prompt := st.chat_input("Ask a question about the PDF..."):
+            # Add user message to chat history
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt})
+
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            # Generate response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        chat_history = convert_to_messages(
+                            st.session_state.messages)
+
+                        response = st.session_state.chain.invoke(
+                            chat_history)
+                        answer = response.content
+
+                        st.markdown(answer)
+
+                    except Exception as e:
+                        error_msg = f"Error generating response: {str(e)}"
+                        st.error(error_msg)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
+
+    else:
+        st.info("👆 Please upload a PDF file to get started!")
 
 
-@cl.on_message
-async def main(message: cl.Message):
-    # Let's load the chain from user_session
-    chain = cl.user_session.get("chain")  # type: LLMChain
-
-    response = await chain.arun(
-        question=message.content, callbacks=[cl.LangchainCallbackHandler()]
-    )
-
-    await cl.Message(content=response).send()
+if __name__ == "__main__":
+    main()
