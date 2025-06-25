@@ -1,137 +1,211 @@
-from tempfile import NamedTemporaryFile
 from typing import List
+import tempfile
+import os
 
-import chainlit as cl
-from chainlit.types import AskFileResponse
-from langchain.chat_models import ChatOpenAI
+from dotenv import load_dotenv
+from langchain.schema import Document
+from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-from langchain.schema import Document, StrOutputParser
 from langchain.chains import LLMChain
-
-from langchain.document_loaders import PDFPlumberLoader
+from langchain.schema import StrOutputParser
+from langchain_community.document_loaders import PDFPlumberLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.messages.utils import convert_to_messages
+
+import streamlit as st
+
+# Load environment variables
+load_dotenv()
 
 
-def process_file(*, file: AskFileResponse) -> List[Document]:
-    """Processes one PDF file from a Chainlit AskFileResponse object by first
-    loading the PDF document and then chunk it into sub documents. Only
-    supports PDF files.
+# Page configuration
+st.set_page_config(
+    page_title="PDF Q&A Assistant",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chain" not in st.session_state:
+    st.session_state.chain = None
+if "docs" not in st.session_state:
+    st.session_state.docs = None
+if "processed_file" not in st.session_state:
+    st.session_state.processed_file = None
+
+
+def process_file(file_data: bytes, file_type: str = None) -> List[Document]:
+    """Process a PDF file and split it into documents.
 
     Args:
-        file (AskFileResponse): input file to be processed
-    
-    Raises:
-        ValueError: when we fail to process PDF files. We consider PDF file
-        processing failure when there's no text returned. For example, PDFs
-        with only image contents, corrupted PDFs, etc.
+        file_data: File bytes from Streamlit uploader
+        file_type: Optional file type, defaults to checking if PDF
 
     Returns:
-        List[Document]: List of Document(s). Each individual document has two
-        fields: page_content(string) and metadata(dict).
+        List of processed documents
+
+    Raises:
+        TypeError: If file is not a PDF
+        ValueError: If PDF parsing fails
     """
-    # We only support PDF as input.
-    if file.type != "application/pdf":
+    if file_type and file_type != "application/pdf":
         raise TypeError("Only PDF files are supported")
 
-    with NamedTemporaryFile() as tempfile:
-        tempfile.write(file.content)
+    # Create a temporary file for the PDF bytes
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(file_data)
+        tmp_file_path = tmp_file.name
 
+    try:
         ######################################################################
         # Exercise 1a:
         # We have the input PDF file saved as a temporary file. The name of
         # the file is 'tempfile.name'. Please use one of the PDF loaders in
         # Langchain to load the file.
         ######################################################################
-        loader = PDFPlumberLoader(tempfile.name)
+        loader = PDFPlumberLoader(tmp_file_path)
         documents = loader.load()
         ######################################################################
+    finally:
+        # Clean up the temporary file
+        os.unlink(tmp_file_path)
 
-        ######################################################################
-        # Exercise 1b:
-        # We can now chunk the documents now it is loaded. Langchain provides
-        # a list of helpful text splitters. Please use one of the splitters
-        # to chunk the file.
-        ######################################################################
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=3000,
-            chunk_overlap=100
+    # Clean up extracted text to fix common PDF extraction issues
+    for doc in documents:
+        # Fix common spacing issues from PDF extraction
+        doc.page_content = doc.page_content.replace(
+            '\n', ' ')  # Replace newlines with spaces
+        doc.page_content = ' '.join(
+            doc.page_content.split())  # Normalize whitespace
+
+    ######################################################################
+    # Exercise 1b:
+    # We can now chunk the documents now it is loaded. Langchain provides
+    # a list of helpful text splitters. Please use one of the splitters
+    # to chunk the file.
+    ######################################################################
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=3000,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    docs = text_splitter.split_documents(documents)
+    ######################################################################
+    for i, doc in enumerate(docs):
+        doc.metadata["source"] = f"source_{i}"
+    if not docs:
+        raise ValueError("PDF file parsing failed.")
+    return docs
+
+# Main app
+
+
+def main():
+    st.title("📚 PDF Q&A Assistant")
+    st.markdown("""
+    Welcome to the PDF Q&A Assistant!
+    To get started:
+    1. Upload a PDF file
+    2. Ask any question about the file!
+    """)
+
+    # Sidebar for file upload
+    with st.sidebar:
+        st.header("📤 Upload PDF")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file",
+            type=["pdf"],
+            help="Upload a PDF file to ask questions about its content"
         )
-        docs = text_splitter.split_documents(documents)
+        ######################################################################
+        # Exercise 1c:
+        # At the start of our Chat with PDF app, we will first ask users to
+        # upload the PDF file they want to ask questions against.
+        #
+        # Remember to store the processed docs and uploaded fiels
+        # in the session state so we can use it later.
+        # Note for this course, we only want to deal with one single file.
+        ######################################################################
+        if uploaded_file is not None:
+            if st.session_state.processed_file != uploaded_file.name:
+                with st.status("Processing PDF...", expanded=True) as status:
+                    st.write("📄 Reading PDF content...")
+
+                    try:
+                        # Process the PDF
+                        docs = process_file(
+                            uploaded_file.getvalue(), "application/pdf")
+                        st.write(f"✅ Extracted {len(docs)} text chunks")
+
+                        # Store in session state
+                        st.session_state.docs = docs
+                        st.session_state.processed_file = uploaded_file.name
         ######################################################################
 
-        # We are adding source_id into the metadata here to denote which
-        # source document it is.
-        for i, doc in enumerate(docs):
-            doc.metadata["source"] = f"source_{i}"
+                        status.update(
+                            label="✅ PDF processed successfully!", state="complete")
 
-        if not docs:
-            raise ValueError("PDF file parsing failed.")
+                    except Exception as e:
+                        status.update(
+                            label="❌ Error processing PDF", state="error")
+                        st.error(f"Error: {str(e)}")
+                        return
 
-        return docs
+            st.success(f"📄 **{uploaded_file.name}** is ready for questions!")
 
-
-@cl.on_chat_start
-async def on_chat_start():
-    ######################################################################
-    # Exercise 1c:
-    # At the start of our Chat with PDF app, we will first ask users to
-    # upload the PDF file they want to ask questions against.
-    # 
-    # Please use Chainlit's AskFileMessage and get the file from users.
-    # Note for this course, we only want to deal with one single file.
-    ######################################################################
-    files = None
-    while files is None:
-        files = await cl.AskFileMessage(
-            content="Please Upload the PDF file you want to chat with...",
-            accept=["application/pdf"],
-            max_size_mb=20,
-        ).send()
-    file = files[0]
-    ######################################################################
-
-    # Send message to user to let them know we are processing the file
-    msg = cl.Message(content=f"Processing `{file.name}`...")
-    await msg.send()
-
-    docs = process_file(file=file)
-    cl.user_session.set("docs", docs)
-    msg.content = f"`{file.name}` processed. Loading ..."
-    await msg.update()
-
-    model = ChatOpenAI(
-        model="gpt-3.5-turbo-16k-0613",
-        streaming=True
+    chain = ChatOpenAI(
+        model='gpt-4.1-mini',
+        temperature=0,
+        streaming=True,
+        max_tokens=8192
     )
+    # Store the chain in session state
+    st.session_state.chain = chain
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "You are Chainlit GPT, a helpful assistant.",
-            ),
-            (
-                "human",
-                "{question}"
-            ),
-        ]
-    )
-    chain = LLMChain(llm=model, prompt=prompt, output_parser=StrOutputParser())
+    # Chat interface
+    if st.session_state.chain is not None:
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    # We are saving the chain in user_session, so we do not have to rebuild
-    # it every single time.
-    cl.user_session.set("chain", chain)
+        # Chat input
+        if prompt := st.chat_input("Ask a question about the PDF..."):
+            # Add user message to chat history
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt})
+
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            # Generate response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        chat_history = convert_to_messages(
+                            st.session_state.messages)
+
+                        response = st.session_state.chain.invoke(
+                            chat_history)
+                        answer = response.content
+
+                        st.markdown(answer)
+
+                    except Exception as e:
+                        error_msg = f"Error generating response: {str(e)}"
+                        st.error(error_msg)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
+
+    else:
+        st.info("👆 Please upload a PDF file to get started!")
 
 
-@cl.on_message
-async def main(message: cl.Message):
-
-    # Let's load the chain from user_session
-    chain = cl.user_session.get("chain")  # type: LLMChain
-
-    response = await chain.arun(
-        question=message.content, callbacks=[cl.LangchainCallbackHandler()]
-    )
-
-    await cl.Message(content=response).send()
-
+if __name__ == "__main__":
+    main()
