@@ -1,68 +1,112 @@
-import chainlit as cl
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import StrOutputParser
-from langchain.chains import LLMChain
+from typing import List, Dict, Any
 
-@cl.on_chat_start
-async def on_chat_start():
+from dotenv import load_dotenv
+from langchain.callbacks.base import BaseCallbackHandler
+from langchain_openai import ChatOpenAI
+from langchain_core.messages.utils import convert_to_messages
+
+import streamlit as st
+
+
+# Load environment variables
+load_dotenv()
+
+
+# Page configuration
+st.set_page_config(
+    page_title="PDF Q&A Assistant",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session states
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chain" not in st.session_state:
+    st.session_state.chain = None
+
+
+class StreamlitCallbackHandler(BaseCallbackHandler):
+    """Custom callback handler for streaming responses in Streamlit."""
+
+    def __init__(self, container):
+        self.container = container
+        self.text = ""
+
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        """Called when LLM generates a new token."""
+        self.text += token
+        self.container.markdown(self.text)
+
+
+def main():
+    st.title("📚 PDF Q&A Assistant")
     ##########################################################################
     # Exercise 1a:
-    # Our Chainlit app should initialize the LLM chat via Langchain at the
-    # start of a chat session.
-    # 
     # First, we need to choose an LLM from OpenAI's list of models. Remember
     # to set streaming=True for streaming tokens
     ##########################################################################
-    model = ChatOpenAI(
+    chain = ChatOpenAI(
         ...
     )
+    # Store the chain in session state
+    st.session_state.chain = chain
 
-    ##########################################################################
-    # Exercise 1b:
-    # Next, we will need to set the prompt template for chat. Prompt templates
-    # is how we set prompts and then inject informations into the prompt.
-    # 
-    # Please create the prompt template using ChatPromptTemplate. Use variable
-    # name "question" as the variable in the template.
-    # Refer to the documentation listed in the README.md file for reference.
-    ##########################################################################
-    prompt = ChatPromptTemplate.from_messages(
-        ...
-    )
-    ##########################################################################
-    # Exercise 1c:
-    # Now we have model and prompt, let's build our Chain. A Chain is one or a
-    # series of LLM calls.We will use the default StrOutputParser to parse the
-    # LLM outputs.
-    ##########################################################################
-    chain = LLMChain(
-        llm=...,
-        prompt=...,
-        output_parser=StrOutputParser()
-    )
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # Let's save the chain from user_session so we do not have to rebuild
-    # every single time we receive a message
-    cl.user_session.set("chain", chain)
+    # Chat input
+    if prompt := st.chat_input("Ask a question..."):
+        ##########################################################################
+        # Exercise 1b:
+        # Now we get a new user prompt in `prompt` variable, we we will need to add it into the chat history.
+        #
+        # Refer to the documentation listed in the README.md file for reference.
+        ##########################################################################
+        # Add user message to chat history
+        st.session_state.messages.append(
+            ...
+        )
+
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Generate response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    ##########################################################################
+                    # Exercise 1c:
+                    # Now we have the model, chat history, and the new user prompt, let's invoke our Chain. A Chain is one or a series of LLM calls.
+                    # Reminder
+                    # After invoking, please remember adding the # response to chat history.
+                    ##########################################################################
+                    chat_history = convert_to_messages(
+                        ...
+                    )
+
+                    response = ...
+                    answer = response.content
+
+                    st.markdown(answer)
+
+                    # Add assistant response to chat history
+                    st.session_state.messages.append(
+                        ...
+                    )
+
+                except Exception as e:
+                    error_msg = f"Error generating response: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
 
 
-@cl.on_message
-async def main(message: cl.Message):
-
-    # Let's load the chain from user_session
-    chain = cl.user_session.get("chain")  # type: LLMChain
-
-    ##########################################################################
-    # Exercise 1d:
-    # Everytime we receive a new user message, we will get the chain from 
-    # user_session. We will run the chain with user's question and return LLM
-    # response to the user.
-    ##########################################################################
-    response = await chain.arun(
-        ...,
-        callbacks=[cl.LangchainCallbackHandler()]
-    )
-
-    await cl.Message(content=response).send()
-
+if __name__ == "__main__":
+    main()
