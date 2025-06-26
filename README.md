@@ -1,14 +1,15 @@
 ---
-license: other
 title: Test
-sdk: streamlit
-sdk_version: 1.46.0
 emoji: 🚀
 colorFrom: green
 colorTo: green
+sdk: streamlit
+sdk_version: 1.46.0
 pinned: false
 app_file: app/app.py
+license: other
 ---
+
 # Hands-On AI: Building and Deploying LLM-Powered Apps
 This is the repository for the LinkedIn Learning course `Hands-On AI: Building and Deploying LLM-Powered Apps`. The full course is available from [LinkedIn Learning][lil-course-url].
 
