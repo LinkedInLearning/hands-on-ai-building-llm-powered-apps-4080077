@@ -1,217 +1,312 @@
-# Chroma compatibility issue resolution
-# https://docs.trychroma.com/troubleshooting#sqlite
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+import logging
+from typing import List, Dict, Any, Tuple
 
-from tempfile import NamedTemporaryFile
-from typing import List
-
-import chainlit as cl
-from chainlit.types import AskFileResponse
-
-import chromadb
-from chromadb.config import Settings
-from langchain.chains import LLMChain, RetrievalQAWithSourcesChain
-from langchain.chat_models import ChatOpenAI
-from langchain.document_loaders import PDFPlumberLoader
-from langchain.embeddings.openai import OpenAIEmbeddings
+from dotenv import load_dotenv
+from langchain.callbacks.base import BaseCallbackHandler
 from langchain.schema import Document
-from langchain.schema.embeddings import Embeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
+from langchain_openai import ChatOpenAI
 from langchain.vectorstores.base import VectorStore
 
-
-##############################################################################
-# Exercise 2:
-# Please import the copied prompt scaffolds from prompt.py
-##############################################################################
-from prompt import EXAMPLE_PROMPT, PROMPT
-
-
-def process_file(*, file: AskFileResponse) -> List[Document]:
-    """Processes one PDF file from a Chainlit AskFileResponse object by first
-    loading the PDF document and then chunk it into sub documents. Only
-    supports PDF files.
-
-    Args:
-        file (AskFileResponse): input file to be processed
-    
-    Raises:
-        ValueError: when we fail to process PDF files. We consider PDF file
-        processing failure when there's no text returned. For example, PDFs
-        with only image contents, corrupted PDFs, etc.
-
-    Returns:
-        List[Document]: List of Document(s). Each individual document has two
-        fields: page_content(string) and metadata(dict).
-    """
-    if file.type != "application/pdf":
-        raise TypeError("Only PDF files are supported")
-
-    with NamedTemporaryFile() as tempfile:
-        tempfile.write(file.content)
-
-        loader = PDFPlumberLoader(tempfile.name)
-        documents = loader.load()
-
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=3000,
-            chunk_overlap=100
-        )
-        docs = text_splitter.split_documents(documents)
-
-        # Adding source_id into the metadata to denote which document it is
-        for i, doc in enumerate(docs):
-            doc.metadata["source"] = f"source_{i}"
-
-        if not docs:
-            raise ValueError("PDF file parsing failed.")
-
-        return docs
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain.memory import ConversationBufferWindowMemory
+from langchain_core.messages import HumanMessage, AIMessage
+import streamlit as st
 
 
-def create_search_engine(*, docs: List[Document], embeddings: Embeddings) -> VectorStore:
-    """Takes a list of Langchain Documents and an embedding model API wrapper
-    and build a search index using a VectorStore.
+# NOTE: we moved both create_search_engine and process_file to utils.py for better organization
+from utils import process_file, create_search_engine
+from prompt import PROMPT, WELCOME_MESSAGE
+
+
+load_dotenv()
+
+
+# Page configuration
+st.set_page_config(
+    page_title="PDF Q&A Assistant",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chain" not in st.session_state:
+    st.session_state.chain = None
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
+if "docs" not in st.session_state:
+    st.session_state.docs = None
+if "processed_file" not in st.session_state:
+    st.session_state.processed_file = None
+
+
+def create_qa_chain(vector_store: VectorStore) -> Tuple[Any, Any]:
+    """Create the QA chain with the vector store using LCEL.
 
     Args:
-        docs (List[Document]): List of Langchain Documents to be indexed into
-        the search engine.
-        embeddings (Embeddings): encoder model API used to calculate embedding
+        vector_store: The vector store containing document embeddings
 
     Returns:
-        VectorStore: Langchain VectorStore
+        Tuple containing:
+            - chain: The LCEL chain for question answering
+            - retriever: The document retriever
     """
-    # Initialize Chromadb client to enable resetting and disable telemtry
-    client = chromadb.EphemeralClient()
-    client_settings=Settings(
-        allow_reset=True,
-        anonymized_telemetry=False
-    )
-
-    # Reset the search engine to ensure we don't use old copies.
-    # NOTE: we do not need this for production
-    search_engine = Chroma(
-        client=client,
-        client_settings=client_settings
-    )
-    search_engine._client.reset()
-    search_engine = Chroma.from_documents(
-        client=client,
-        documents=docs,
-        embedding=embeddings,
-        client_settings=client_settings 
-    )
-
-    return search_engine
-    
-
-@cl.on_chat_start
-async def on_chat_start():
-    """This function is written to prepare the environments for the chat
-    with PDF application. It should be decorated with cl.on_chat_start.
-
-    Returns:
-        None
-    """
-    # Asking user to to upload a PDF to chat with
-    files = None
-    while files is None:
-        files = await cl.AskFileMessage(
-            content="Please Upload the PDF file you want to chat with...",
-            accept=["application/pdf"],
-            max_size_mb=20,
-        ).send()
-    file = files[0]
-
-    # Process and save data in the user session
-    msg = cl.Message(content=f"Processing `{file.name}`...")
-    await msg.send()
-   
-    docs = process_file(file=file)
-    cl.user_session.set("docs", docs)
-    msg.content = f"`{file.name}` processed. Loading ..."
-    await msg.update()
-
-    # Indexing documents into our search engine
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-ada-002"
-    )
-    try:
-        search_engine = await cl.make_async(create_search_engine)(
-            docs=docs,
-            embeddings=embeddings
-        )
-    except Exception as e:
-        await cl.Message(content=f"Error: {e}").send()
-        raise SystemError
-    msg.content = f"`{file.name}` loaded. You can now ask questions!"
-    await msg.update()
-
-    model = ChatOpenAI(
-        model="gpt-3.5-turbo-16k-0613",
+    llm = ChatOpenAI(
+        model='gpt-4.1-mini',
         temperature=0,
-        streaming=True
+        streaming=True,
+        max_tokens=8192
     )
+
+    # Create retriever
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+
+    def format_docs(docs: List[Document]) -> str:
+        """Format retrieved documents for the prompt.
+
+        Args:
+            docs: List of retrieved documents
+
+        Returns:
+            Formatted string containing document content and sources
+        """
+        formatted = []
+        for doc in docs:
+            content = doc.page_content
+            source = doc.metadata.get("source", "unknown")
+            formatted.append(f"Content: {content}\nSource: {source}")
+        return "\n\n".join(formatted)
+
+    ##########################################################################
+    # Exercise 2:
+    # Lets refactor our existing RetrievalQAWithSourceChain to use
+    # LangChain Expression Language (LCEL) so we can easily manage its prompt.
+    # Remember to use the imported Prompt from prompt.py.
+    #
+    # This documentation will help you:
+    # https: // python.langchain.com/docs/versions/migrating_chains/retrieval_qa/
+    ##########################################################################
+    def get_question(inputs: Dict[str, Any]) -> str:
+        return inputs["question"]
+
+    def get_chat_history(inputs: Dict[str, Any]) -> List[Any]:
+        return inputs["chat_history"]
+
+    chain = (
+        {
+            "context": get_question | retriever | format_docs,
+            "question": get_question,
+            "chat_history": get_chat_history
+        }
+        | PROMPT
+        | llm
+        | StrOutputParser()
+    )
+    ##########################################################################
+    return chain, retriever
+
+
+def format_answer_with_sources(response: str, retrieved_docs: List[Document]) -> Tuple[str, List[Dict[str, str]]]:
+    """Format the answer with source information.
+
+    Args:
+        response: The LLM response containing the answer
+        retrieved_docs: List of documents retrieved from the vector store
+
+    Returns:
+        Tuple containing:
+            - answer: The formatted answer string
+            - source_contents: List of source dictionaries with name and content
+    """
+    answer = response
+    source_contents = []
+
+    sources_text = ""
+    if "SOURCES:" in answer:
+        parts = answer.split("SOURCES:")
+        if len(parts) > 1:
+            sources_text = parts[1].strip()
+
+    if sources_text and retrieved_docs:
+        source_map = {}
+        for doc in retrieved_docs:
+            source_name = doc.metadata.get("source", "unknown")
+            source_map[source_name] = doc.page_content
+
+        found_sources = []
+        for source in sources_text.split(","):
+            source_name = source.strip().replace(".", "")
+            if source_name in source_map:
+                found_sources.append(source_name)
+                source_contents.append({
+                    "name": source_name,
+                    "content": source_map[source_name]
+                })
+
+    return answer, source_contents
+
+
+def get_chat_history_messages(messages: List[Dict[str, str]]) -> List[Any]:
+    """Convert Streamlit messages to LangChain message format.
+
+    Args:
+        messages: List of Streamlit message dictionaries with 'role' and 'content' keys
+
+    Returns:
+        List of LangChain message objects (HumanMessage or AIMessage)
+    """
+    chat_history = []
+    for msg in messages:
+        if msg["role"] == "user":
+            chat_history.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            chat_history.append(AIMessage(content=msg["content"]))
+    return chat_history
+
+
+def main() -> None:
+    """Main Streamlit application function for PDF Q&A Assistant.
+
+    Handles file upload, processing, and chat interface for asking questions
+    about uploaded PDF documents using RAG (Retrieval Augmented Generation).
+    """
+    st.title("📚 PDF Q&A Assistant")
+    st.markdown(WELCOME_MESSAGE)
+
+    # Sidebar for file upload
+    with st.sidebar:
+        st.header("📤 Upload PDF")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file",
+            type=["pdf"],
+            help="Upload a PDF file to ask questions about its content"
+        )
+
+        if uploaded_file is not None:
+            if st.session_state.processed_file != uploaded_file.name:
+                with st.status("Processing PDF...", expanded=True) as status:
+                    st.write("📄 Reading PDF content...")
+
+                    try:
+                        docs = process_file(
+                            uploaded_file.getvalue(), "application/pdf")
+                        st.write(f"✅ Extracted {len(docs)} text chunks")
+
+                        st.write("🔍 Creating vector store...")
+                        vector_store, _ = create_search_engine(
+                            uploaded_file.getvalue(), "application/pdf")
+
+                        st.session_state.vector_store = vector_store
+                        st.session_state.docs = docs
+                        st.session_state.processed_file = uploaded_file.name
+
+                        status.update(
+                            label="✅ PDF processed successfully!", state="complete")
+
+                    except Exception as e:
+                        status.update(
+                            label="❌ Error processing PDF", state="error")
+                        st.error(f"Error: {str(e)}")
+                        return
+
+            st.success(f"📄 **{uploaded_file.name}** is ready for questions!")
 
     ##########################################################################
     # Exercise 3:
-    # Please modify this chain's initiation with the proper kwargs to take in
-    # custom prompts.
+    # Now we have search engine setup, our Chat with PDF application can do
+    # RAG architecture pattern. Please use the appropriate RetrievalQA Chain
+    # from Langchain.
+    #
+    # Remember, we would want to set the model temperature to
+    # 0 to ensure model outputs do not vary across runs, and we would want to
+    # also return sources to our answers.
     ##########################################################################
-    chain = RetrievalQAWithSourcesChain.from_chain_type(
-        llm=model,
-        chain_type="stuff",
-        retriever=search_engine.as_retriever(max_tokens_limit=4097),
-        chain_type_kwargs={"prompt": PROMPT, "document_prompt": EXAMPLE_PROMPT},
-    )
+    if st.session_state.vector_store is not None:
+        st.write("🧠 Setting up Q&A chain...")
+        chain, retriever = create_qa_chain(st.session_state.vector_store)
 
-    # We are saving the chain in user_session, so we do not have to rebuild
-    # it every single time.
-    cl.user_session.set("chain", chain)
+        # Store in session state
+        st.session_state.chain = chain
+        st.session_state.retriever = retriever
+    ##########################################################################
+
+    # Chat interface
+    if st.session_state.chain is not None:
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.text(message["content"])
+
+                # Display sources if available
+                if "sources" in message and message["sources"]:
+                    for source in message["sources"]:
+                        with st.expander(f"📄 Source: {source['name']}"):
+                            st.text(source["content"])
+
+        # Chat input
+        if prompt := st.chat_input("Ask a question about the PDF..."):
+            # Add user message to chat history
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt})
+
+            # Display user message
+            with st.chat_message("user"):
+                st.text(prompt)
+
+            # Generate response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        chat_history = get_chat_history_messages(
+                            st.session_state.messages)
+
+                        # Get retrieved documents for source processing
+                        retrieved_docs = st.session_state.retriever.invoke(
+                            prompt)
+
+                        # Invoke the LCEL chain
+                        response = st.session_state.chain.invoke({
+                            "question": prompt,
+                            "chat_history": chat_history
+                        })
+
+                        answer, source_contents = format_answer_with_sources(
+                            response, retrieved_docs
+                        )
+
+                        st.text(answer)
+
+                        # Display sources
+                        if source_contents:
+                            for source in source_contents:
+                                with st.expander(f"📄 Source: {source['name']}"):
+                                    st.text(source["content"])
+
+                        # Add assistant response to chat history
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": source_contents
+                        })
+
+                    except Exception as e:
+                        error_msg = f"Error generating response: {str(e)}"
+                        import logging
+                        logging.error(e, exc_info=True)
+                        st.error(error_msg)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
+
+    else:
+        st.info("👆 Please upload a PDF file to get started!")
 
 
-@cl.on_message
-async def main(message: cl.Message):
-
-    # Let's load the chain from user_session
-    chain = cl.user_session.get("chain")  # type: RetrievalQAWithSourcesChain
-
-    response = await chain.acall(
-        message.content,
-        callbacks=[cl.AsyncLangchainCallbackHandler(stream_final_answer=True)]
-    )
-    answer = response["answer"]
-    sources = response["sources"].strip()
-
-    # Get all of the documents from user session
-    docs = cl.user_session.get("docs")
-    metadatas = [doc.metadata for doc in docs]
-    all_sources = [m["source"] for m in metadatas]
-
-    # Adding sources to the answer
-    source_elements = []
-    if sources:
-        found_sources = []
-
-        # Add the sources to the message
-        for source in sources.split(","):
-            source_name = source.strip().replace(".", "")
-            # Get the index of the source
-            try:
-                index = all_sources.index(source_name)
-            except ValueError:
-                continue
-            text = docs[index].page_content
-            found_sources.append(source_name)
-            # Create the text element referenced in the message
-            source_elements.append(cl.Text(content=text, name=source_name))
-
-        if found_sources:
-            answer += f"\nSources: {', '.join(found_sources)}"
-        else:
-            answer += "\nNo sources found"
-
-    await cl.Message(content=answer, elements=source_elements).send()
+if __name__ == "__main__":
+    main()

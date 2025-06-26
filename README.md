@@ -7,12 +7,13 @@ Now our Chat with PDF application is up and running, but we run into a very slig
 
 We can "fix" this is via prompt engineering. Prompt Engineering refers to methods for how to communicate with LLM to steer its behavior for desired outcomes without updating the model weights.
 
-Before we can do that, we need to extract the prompt template out of the code.
+Before we can do that, we need to setup our LLM app to use prompt templates.
 
 ## Exercises
 
-Please extract Langchain's prompt template out of the code base into an independent prompt.py in the app directory. Control (or Command for Mac) click will help you navigate this very quickly!
+Please refactor our current code to utilize Langchain's LCEL and put the prompts into independent prompt.py in the app directory. Control (or Command for Mac) click will help you navigate this very quickly!
 
 ## References
 
 - [Prompt Engineering vs Blind Prompting](https://mitchellh.com/writing/prompt-engineering-vs-blind-prompting)
+- [LCEL RetrievalQA](https://python.langchain.com/docs/versions/migrating_chains/retrieval_qa/)
