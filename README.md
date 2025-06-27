@@ -34,9 +34,28 @@ And then we will setup CI/CD for automated deployment.
 
 Complete the exercises in `app/app.py` and `.env` (see `.env.sample`). Make sure you follow the instruction here: [https://huggingface.co/docs/hub/en/spaces-github-actions](https://huggingface.co/docs/hub/en/spaces-github-actions) and here [Hugging Face Hub: Important Git Authentication Changes](https://huggingface.co/blog/password-git-deprecation).
 
-After deployment, please remember to into Huggingface Space settings to setup the environment variables such as `LANGSMITH_API_KEY`.
+After deployment, please remember to into Huggingface Space settings to setup the following environment variables and secrets:
+```
+# Variables
+LANGSMITH_TRACING="true"
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+LANGSMITH_PROJECT="linkedin_learning"
+ALLOW_RESET="true"
+
+# Secrets
+LANGSMITH_API_KEY=""
+```
 
 > NOTE: To reduce the scope, we will manually deploy to Huggingface Only. We prepared `.github/workflows/deploy-to-hf.yml` workflow as an extracurricular exercise for the learner.
+
+> NOTE: if you are deploying from this current branch `03_06`, plase do
+```
+git push --force space 03_06:main
+```
+otherwise if you fork this repository and deploy from your own main branch
+```
+git push --force space main
+```
 
 ## References
 
