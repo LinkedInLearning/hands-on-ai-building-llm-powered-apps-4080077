@@ -4,6 +4,11 @@
 # Chainlit
 .chainlit/.langchain.db
 
+# Claude settings (local only)
+CLAUDE.md
+.claude/settings.json
+.claude/settings.local.json
+
 # Chroma
 .chromadb/
 
