@@ -50,6 +50,7 @@ def main():
     chain = ChatOpenAI(
         ...
     )
+    ##########################################################################
     # Store the chain in session state
     st.session_state.chain = chain
 
@@ -70,6 +71,7 @@ def main():
         st.session_state.messages.append(
             ...
         )
+        ##########################################################################
 
         # Display user message
         with st.chat_message("user"):
@@ -98,6 +100,7 @@ def main():
                     st.session_state.messages.append(
                         ...
                     )
+                    ##########################################################################
 
                 except Exception as e:
                     error_msg = f"Error generating response: {str(e)}"
