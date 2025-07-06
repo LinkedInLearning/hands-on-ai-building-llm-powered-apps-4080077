@@ -53,6 +53,7 @@ def main():
         streaming=True,
         max_tokens=8192
     )
+    ##########################################################################
     # Store the chain in session state
     st.session_state.chain = chain
 
@@ -73,7 +74,9 @@ def main():
         ##########################################################################
         # Add user message to chat history
         st.session_state.messages.append(
-            {"role": "user", "content": prompt})
+            {"role": "user", "content": prompt}
+        )
+        ##########################################################################
 
         # Display user message
         with st.chat_message("user"):
@@ -90,7 +93,8 @@ def main():
                     # After invoking, please remember adding the # response to chat history.
                     ##########################################################################
                     chat_history = convert_to_messages(
-                        st.session_state.messages)
+                        st.session_state.messages
+                    )
 
                     response = st.session_state.chain.invoke(
                         chat_history)
@@ -103,6 +107,7 @@ def main():
                         "role": "assistant",
                         "content": answer,
                     })
+                    ##########################################################################
 
                 except Exception as e:
                     error_msg = f"Error generating response: {str(e)}"
