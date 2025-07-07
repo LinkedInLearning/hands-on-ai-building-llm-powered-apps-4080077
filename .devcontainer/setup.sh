@@ -90,4 +90,6 @@ RESET='\[\033[00m\]'
 export PS1="${BLUE}\W${RESET}${YELLOW}\$(parse_git_branch)${RESET}${GREEN} $ ${RESET}"
 EOF
 
+export ENABLE_BACKGROUND_TASKS=1
+
 echo "Setup completed successfully!" 
